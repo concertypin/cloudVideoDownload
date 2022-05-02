@@ -7,7 +7,7 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
-import io.ktor.server.plugins.*
+import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 
@@ -18,7 +18,7 @@ class DownloadingObj(var url: String, var soundLUFS: Int = -23)
 {
     var pid = -1L
     var queueID = ""
-    var whenDownloadStarted = 0L
+    var whenDownloadStarted = "NaN"
     
     init
     {
@@ -27,9 +27,10 @@ class DownloadingObj(var url: String, var soundLUFS: Int = -23)
     
     fun download()
     {
-        val cmd = listOf("import yt_dlp_kt", "yt_dlp_kt.orchestration(\"${this.url}\",${this.soundLUFS})")
-        whenDownloadStarted = System.currentTimeMillis()
-        pid = exec("python -c" + cmd.joinToString(";"))
+        val cmd =
+            listOf("from src\\main import yt_dlp_kt as ytdlp", "ytdlp.orchestration(\"${this.url}\",${this.soundLUFS})")
+        whenDownloadStarted = System.currentTimeMillis().toString()
+        pid = exec("python -c" + cmd.joinToString(";"), willWaitForFinish = true)
     }
     
     fun isFinished(): Boolean
@@ -37,7 +38,7 @@ class DownloadingObj(var url: String, var soundLUFS: Int = -23)
         val processBuilder = ProcessBuilder()
         if(System.getProperty("os.name").contains("Windows"))
         {
-            processBuilder.command("sh", "-c", "tasklist /fi \"PID eq ${this.pid}\" /fo csv")
+            processBuilder.command("cmd", "/c", "tasklist /fi \"PID eq ${this.pid}\" /fo csv")
             val process: Process = processBuilder.start()
             
             val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
@@ -55,62 +56,58 @@ class DownloadingObj(var url: String, var soundLUFS: Int = -23)
         }
     }
 }
-
 fun main()
 {
-    embeddedServer(Netty, port = 8080, host = "0.0.0.0")
+    println(System.getProperty("user.dir"))
+    embeddedServer(Netty, port = (System.getenv("PORT") ?: "0").toInt(), host = "0.0.0.0")
     {
         install(ContentNegotiation) {
             json()
         }
         routing {
             get("/listQueue") {
-                @Suppress("unused")
-                data class ListQueueRespond(val elements: List<String>)
-                {
-                    val size = queue.size
-                }
                 if(queue.size != 0)
                 {
-                    val tempElement = mutableListOf<String>()
+                    var tempElement = "["
                     for(i in queue)
-                        tempElement.add(i.queueID)
-                    call.respond(HttpStatusCode.OK, ListQueueRespond(tempElement))
+                        tempElement += "\"${i.queueID}\","
+                    
+                    tempElement = tempElement.substring(0 until tempElement.length - 1) + "]"
+                    call.respond(HttpStatusCode.OK, mapOf("size" to queue.size.toString(), "elements" to tempElement))
                 }
                 else
-                    call.respond(HttpStatusCode.OK, ListQueueRespond(listOf()))
+                    call.respond(HttpStatusCode.OK, mapOf("size" to queue.size.toString(), "elements" to "[]"))
             }
             
             
             get("/download") {
-                val url = call.request.queryParameters.get("url")
+                val url = call.request.queryParameters["url"]
                 if(url == null)
                 {
                     val errorMsg = mapOf("Error" to "body parameter \"url\" is required.") //url 존재 X->에러
                     call.respond(HttpStatusCode.BadRequest, errorMsg)
                 }
-                
-                val target = (call.request.queryParameters.get("target") ?: "-23").toInt() // 볼륨은 없으면 -23 아니면 그걸로 설정
+    
+                val target = (call.request.queryParameters["target"] ?: "-23").toInt() // 볼륨은 없으면 -23 아니면 그걸로 설정
                 val downloadInstnce = DownloadingObj(url!!, target)
-                
+    
                 val order = queue.size //response 준비
                 queue.add(downloadInstnce)
                 downloadInstnce.download()
-                
-                @Suppress("unused")
-                data class DownloadSuccessfulRespond(val order: Int) //response용 데이터클래스
-                {
-                    val state = "success"
-                    val queueID = downloadInstnce.queueID
-                    val whenDownloadStarted = downloadInstnce.whenDownloadStarted
-                }
-                
-                call.respond(HttpStatusCode.Created, DownloadSuccessfulRespond(order))
+    
+                val downloadSuccessfulRespond = mapOf(
+                    "order" to order.toString(), "state" to "success",
+                    "queueID" to downloadInstnce.queueID,
+                    "whenDownloadStarted" to downloadInstnce.whenDownloadStarted
+                )
+    
+    
+                call.respond(HttpStatusCode.Created, downloadSuccessfulRespond)
             }
             
             
             get("/inspectTask") {
-                val taskID = call.request.queryParameters.get("taskID")
+                val taskID = call.request.queryParameters["taskID"]
                 if(taskID == null)
                 {
                     val errorMsg = mapOf("Error" to "body parameter \"taskID\" is required.") //url 존재 X->에러
@@ -120,15 +117,16 @@ fun main()
                 {
                     if(i.queueID == taskID)
                     {
-                        @Suppress("unused")
-                        data class InspectTaskRespond(val taskID: String)
-                        {
-                            val state = i.isFinished()
-                            val url = i.url
-                            val target = i.soundLUFS
-                            val whenDownloadStarted = i.whenDownloadStarted
-                        }
-                        call.respond(HttpStatusCode.OK, InspectTaskRespond(taskID))
+    
+    
+                        val inspectTaskRespond = mapOf(
+                            "taskID" to i.queueID,
+                            "state" to i.isFinished().toString(),
+                            "url" to i.url,
+                            "target" to i.soundLUFS.toString(),
+                            "whenDownloadStarted" to i.whenDownloadStarted
+                        )
+                        call.respond(HttpStatusCode.OK, inspectTaskRespond)
                     }
                 }
                 val errorMsg = mapOf("Error" to "there is no queue whose taskID is \"${taskID}\".") //url 존재 X->에러
@@ -138,7 +136,7 @@ fun main()
     }.start(wait = true)
 }
 
-fun exec(cmd: String, willFork: Boolean = true): Long
+fun exec(cmd: String, willWaitForFinish: Boolean = true): Long
 {
     val processBuilder = ProcessBuilder()
     
@@ -147,9 +145,10 @@ fun exec(cmd: String, willFork: Boolean = true): Long
     else
         processBuilder.command("sh", "-c", cmd)
     
+    
     val process: Process = processBuilder.start()
     
-    return if(willFork)
+    return if(willWaitForFinish)
     {
         val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
         val line = reader.readText()
@@ -157,5 +156,11 @@ fun exec(cmd: String, willFork: Boolean = true): Long
         process.waitFor().toLong()
     }
     else
+    {
+        if(System.getenv("debug") == "1")
+        {
+            processBuilder.redirectOutput(ProcessBuilder.Redirect.INHERIT)
+        }
         process.pid()
+    }
 }

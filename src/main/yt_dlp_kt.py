@@ -97,7 +97,16 @@ def orchestration(url: str, target: int = -23, delete_original_file: bool = True
     :param url: URL that will be downloaded.
     :return: None.
     """
+    import platform
     video_name, ext = download(url)
-    normalize(video_name + "_original." + ext, video_name + "." + ext, target)
+
+    original_filename = "downloadFileResult\\" + video_name + "_original." + ext
+    result_filename = "downloadFileResult\\" + video_name + "." + ext, target
+
+    if platform.system() != "Windows":
+        original_filename = original_filename.replace("\\", "/")  # because Linux can't read that \ is the same with /
+        result_filename = result_filename.replace("\\", "/")
+
+    normalize(original_filename, result_filename)
     if delete_original_file:
-        os.remove(video_name + "_original." + ext)
+        os.remove(result_filename)
